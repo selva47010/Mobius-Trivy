@@ -6,13 +6,13 @@ on:
       ui_image:
         description: "UI Docker image and tag"
         required: true
-        default: "selvavignesh02/zomato:v2"
+        default: "node:22-bookworm-slim"
         type: string
 
       api_image:
         description: "API Docker image and tag"
         required: true
-        default: "selvavignesh02/petmanagement_backend:latest"
+        default: "python:3.12-slim"
         type: string
 
   # Optional: Enable automatic scans for selected branches.
