@@ -1,36 +1,350 @@
-# This is a basic workflow to help you get started with Actions
+name: Trivy Docker Image Scan
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      ui_image:
+        description: "UI Docker image and tag"
+        required: true
+        default: "selvavignesh02/zomato:v2"
+        type: string
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+      api_image:
+        description: "API Docker image and tag"
+        required: true
+        default: "selvavignesh02/petmanagement_backend:latest"
+        type: string
+
+  # Optional: Enable automatic scans for selected branches.
+  # push:
+  #   branches:
+  #     - main
+  #     - feature/trivy
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: "aquasec/trivy:0.70.0"
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  trivy-image-scan:
+    name: Scan UI and API Images
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Prepare scan environment
+        shell: bash
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          set -euo pipefail
+
+          echo "========== PREPARING ENVIRONMENT =========="
+
+          mkdir -p reports/ui
+          mkdir -p reports/api
+          mkdir -p .trivy-cache
+
+          docker --version
+          python3 --version
+
+          echo "Pulling Trivy scanner image..."
+          docker pull "${TRIVY_IMAGE}"
+
+      - name: Configure image names
+        id: images
+        shell: bash
+        env:
+          UI_IMAGE_INPUT: ${{ inputs.ui_image }}
+          API_IMAGE_INPUT: ${{ inputs.api_image }}
+        run: |
+          set -euo pipefail
+
+          # Use manually supplied values when workflow_dispatch is used.
+          # Fall back to the defaults for other triggers such as push.
+          UI_IMAGE="${UI_IMAGE_INPUT:-selvavignesh02/zomato:v2}"
+          API_IMAGE="${API_IMAGE_INPUT:-selvavignesh02/petmanagement_backend:latest}"
+
+          if [ -z "${UI_IMAGE}" ]; then
+            echo "ERROR: UI image value is empty."
+            exit 1
+          fi
+
+          if [ -z "${API_IMAGE}" ]; then
+            echo "ERROR: API image value is empty."
+            exit 1
+          fi
+
+          echo "ui_image=${UI_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "api_image=${API_IMAGE}" >> "${GITHUB_OUTPUT}"
+
+          echo "========== SCAN CONFIGURATION =========="
+          echo "UI image  : ${UI_IMAGE}"
+          echo "API image : ${API_IMAGE}"
+          echo "Trivy     : ${TRIVY_IMAGE}"
+
+      - name: Pull UI and API images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UI_IMAGE="${{ steps.images.outputs.ui_image }}"
+          API_IMAGE="${{ steps.images.outputs.api_image }}"
+
+          echo "========== PULLING UI IMAGE =========="
+          docker pull "${UI_IMAGE}"
+
+          echo ""
+          echo "========== PULLING API IMAGE =========="
+          docker pull "${API_IMAGE}"
+
+          echo ""
+          echo "========== VERIFYING IMAGES =========="
+
+          docker image inspect \
+            "${UI_IMAGE}" \
+            --format='UI image ID: {{.Id}}'
+
+          docker image inspect \
+            "${API_IMAGE}" \
+            --format='API image ID: {{.Id}}'
+
+      - name: Scan UI and API images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UI_IMAGE="${{ steps.images.outputs.ui_image }}"
+          API_IMAGE="${{ steps.images.outputs.api_image }}"
+
+          scan_image() {
+            NAME="$1"
+            IMAGE="$2"
+            DIR="reports/${NAME}"
+
+            mkdir -p "${DIR}"
+
+            rm -f \
+              "${DIR}/trivy-results.json" \
+              "${DIR}/trivy-results.txt"
+
+            echo ""
+            echo "=========================================="
+            echo "SCANNING ${NAME}: ${IMAGE}"
+            echo "=========================================="
+
+            echo "Confirming the image exists locally..."
+            docker image inspect "${IMAGE}" > /dev/null
+
+            echo "Generating JSON vulnerability report..."
+
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$(pwd)/${DIR}:/reports" \
+              -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
+              "${TRIVY_IMAGE}" \
+              image \
+              --image-src docker \
+              --scanners vuln \
+              --exit-code 0 \
+              --format json \
+              --output /reports/trivy-results.json \
+              "${IMAGE}"
+
+            echo "Validating JSON report..."
+
+            test -s "${DIR}/trivy-results.json"
+
+            python3 -m json.tool \
+              "${DIR}/trivy-results.json" > /dev/null
+
+            echo "Generating TXT vulnerability table..."
+
+            docker run --rm \
+              -v "$(pwd)/${DIR}:/reports" \
+              -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
+              "${TRIVY_IMAGE}" \
+              convert \
+              --format table \
+              --output /reports/trivy-results.txt \
+              /reports/trivy-results.json
+
+            test -s "${DIR}/trivy-results.txt"
+
+            echo ""
+            echo "========== ${NAME} SCAN RESULTS =========="
+
+            echo "Image       : ${IMAGE}"
+            echo "JSON report : ${DIR}/trivy-results.json"
+            echo "TXT report  : ${DIR}/trivy-results.txt"
+
+            echo ""
+            cat "${DIR}/trivy-results.txt"
+          }
+
+          echo "========== SCANNING UI IMAGE =========="
+          scan_image "ui" "${UI_IMAGE}"
+
+          echo ""
+          echo "========== SCANNING API IMAGE =========="
+          scan_image "api" "${API_IMAGE}"
+
+      - name: Generate vulnerability summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========== SCAN SUMMARY =========="
+
+          python3 <<'PY'
+          import json
+          from collections import Counter
+
+          severities = (
+              "CRITICAL",
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "UNKNOWN",
+          )
+
+          print(
+              f"{'IMAGE':<10} "
+              f"{'CRITICAL':>10} "
+              f"{'HIGH':>10} "
+              f"{'MEDIUM':>10} "
+              f"{'LOW':>10} "
+              f"{'UNKNOWN':>10} "
+              f"{'TOTAL':>10}"
+          )
+
+          print("-" * 82)
+
+          overall = Counter()
+          component_summary = {}
+
+          for name in ("ui", "api"):
+              path = f"reports/{name}/trivy-results.json"
+
+              with open(path, encoding="utf-8") as report_file:
+                  report = json.load(report_file)
+
+              counts = Counter()
+
+              for result in report.get("Results") or []:
+                  for vulnerability in (
+                      result.get("Vulnerabilities") or []
+                  ):
+                      severity = vulnerability.get(
+                          "Severity",
+                          "UNKNOWN",
+                      ).upper()
+
+                      counts[severity] += 1
+
+              for severity in severities:
+                  overall[severity] += counts[severity]
+
+              component_summary[name] = {
+                  severity: counts[severity]
+                  for severity in severities
+              }
+
+              component_summary[name]["TOTAL"] = sum(
+                  counts.values()
+              )
+
+              print(
+                  f"{name.upper():<10} "
+                  f"{counts['CRITICAL']:>10} "
+                  f"{counts['HIGH']:>10} "
+                  f"{counts['MEDIUM']:>10} "
+                  f"{counts['LOW']:>10} "
+                  f"{counts['UNKNOWN']:>10} "
+                  f"{sum(counts.values()):>10}"
+              )
+
+          print("-" * 82)
+
+          print(
+              f"{'TOTAL':<10} "
+              f"{overall['CRITICAL']:>10} "
+              f"{overall['HIGH']:>10} "
+              f"{overall['MEDIUM']:>10} "
+              f"{overall['LOW']:>10} "
+              f"{overall['UNKNOWN']:>10} "
+              f"{sum(overall.values()):>10}"
+          )
+
+          summary = {
+              "images": component_summary,
+              "overall": {
+                  severity: overall[severity]
+                  for severity in severities
+              },
+              "total": sum(overall.values()),
+          }
+
+          with open(
+              "reports/scan-summary.json",
+              "w",
+              encoding="utf-8",
+          ) as summary_file:
+              json.dump(summary, summary_file, indent=2)
+          PY
+
+      - name: Display generated reports
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "========== GENERATED REPORT FILES =========="
+
+          if [ -d reports ]; then
+            find reports -type f -exec ls -lh {} \;
+          else
+            echo "Reports directory was not created."
+          fi
+
+          echo ""
+          echo "========== UI TXT REPORT =========="
+
+          if [ -f reports/ui/trivy-results.txt ]; then
+            cat reports/ui/trivy-results.txt
+          else
+            echo "UI TXT report was not generated."
+          fi
+
+          echo ""
+          echo "========== API TXT REPORT =========="
+
+          if [ -f reports/api/trivy-results.txt ]; then
+            cat reports/api/trivy-results.txt
+          else
+            echo "API TXT report was not generated."
+          fi
+
+          echo ""
+          echo "========== SUMMARY JSON =========="
+
+          if [ -f reports/scan-summary.json ]; then
+            cat reports/scan-summary.json
+          else
+            echo "Summary JSON was not generated."
+          fi
+
+      - name: Upload Trivy scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-scan-reports
+          path: |
+            reports/ui/trivy-results.json
+            reports/ui/trivy-results.txt
+            reports/api/trivy-results.json
+            reports/api/trivy-results.txt
+            reports/scan-summary.json
+          if-no-files-found: warn
+          retention-days: 30
