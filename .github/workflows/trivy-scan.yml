@@ -1,4 +1,4 @@
-name: Trivy Image Scan
+name: Trivy Frontend Image Scan
 
 on:
   workflow_dispatch:
@@ -18,17 +18,17 @@ env:
   AWS_REGION: "ap-south-1"
   AWS_ACCOUNT_ID: "222634402470"
   ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
-  ECR_REPOSITORY: "oorja_oem"
+  ECR_REPOSITORY: "te_dev_frontend"
 
   # Change this if the image uses another tag
-  IMAGE_TAG: "latest"
+  IMAGE_TAG: "75150b2"
 
   # Trivy scanner container
   TRIVY_IMAGE: "aquasec/trivy:0.70.0"
 
 jobs:
   trivy-image-scan:
-    name: Scan ECR Image
+    name: Scan te_dev_frontend ECR Image
     runs-on: ubuntu-latest
 
     steps:
@@ -135,14 +135,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          FRONTEND_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          if [ -z "${UI_IMAGE}" ]; then
+          if [ -z "${FRONTEND_IMAGE}" ]; then
             echo "::error::Frontend image URI is empty."
             exit 1
           fi
 
-          echo "frontend_image=${UI_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "frontend_image=${FRONTEND_IMAGE}" >> "${GITHUB_OUTPUT}"
 
           echo "========== IMAGE CONFIGURATION =========="
           echo "AWS region     : ${AWS_REGION}"
@@ -150,7 +150,7 @@ jobs:
           echo "ECR registry   : ${ECR_REGISTRY}"
           echo "ECR repository : ${ECR_REPOSITORY}"
           echo "Image tag      : ${IMAGE_TAG}"
-          echo "Complete image : ${UI_IMAGE}"
+          echo "Complete image : ${FRONTEND_IMAGE}"
           echo "Trivy image    : ${TRIVY_IMAGE}"
 
       # ---------------------------------------------------------
@@ -183,51 +183,52 @@ jobs:
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${{ steps.image.outputs.frontend_image }}"
+          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
 
-          echo "========== PULLING UI IMAGE =========="
-          echo "Image: ${UI_IMAGE}"
+          echo "========== PULLING FRONTEND IMAGE =========="
+          echo "Image: ${FRONTEND_IMAGE}"
 
-          docker pull "${UI_IMAGE}"
+          docker pull "${FRONTEND_IMAGE}"
 
           echo ""
           echo "========== VERIFYING PULLED IMAGE =========="
 
           docker image inspect \
-            "${UI_IMAGE}" \
+            "${FRONTEND_IMAGE}" \
             --format='Image ID: {{.Id}}'
 
           docker image inspect \
-            "${UI_IMAGE}" \
+            "${FRONTEND_IMAGE}" \
             --format='Created: {{.Created}}'
 
           docker image inspect \
-            "${UI_IMAGE}" \
+            "${FRONTEND_IMAGE}" \
             --format='Architecture: {{.Architecture}}'
 
       # ---------------------------------------------------------
       # Step 8: Scan image and produce JSON report
       # ---------------------------------------------------------
-      - name: Generate Trivy JSON and TXT reports
+      - name: Generate Trivy scan reports
         shell: bash
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${{ steps.image.outputs.frontend_image }}"
+          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
           REPORT_DIR="${GITHUB_WORKSPACE}/reports/frontend"
 
           mkdir -p "${REPORT_DIR}"
 
           rm -f \
             "${REPORT_DIR}/trivy-results.json" \
-            "${REPORT_DIR}/trivy-results.txt"
+            "${REPORT_DIR}/trivy-all-results.txt" \
+            "${REPORT_DIR}/trivy-high-critical.txt"
 
           echo "=========================================="
-          echo "SCANNING UI IMAGE"
-          echo "${UI_IMAGE}"
+          echo "SCANNING IMAGE"
+          echo "${FRONTEND_IMAGE}"
           echo "=========================================="
 
-          echo "Generating JSON report..."
+          echo "Generating complete JSON report..."
 
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -242,15 +243,16 @@ jobs:
             --exit-code 0 \
             --format json \
             --output /reports/trivy-results.json \
-            "${UI_IMAGE}"
+            "${FRONTEND_IMAGE}"
 
           echo "Validating JSON report..."
 
           test -s "${REPORT_DIR}/trivy-results.json"
+
           python3 -m json.tool \
             "${REPORT_DIR}/trivy-results.json" > /dev/null
 
-          echo "Generating TXT report..."
+          echo "Generating complete TXT report..."
 
           docker run --rm \
             -v "${REPORT_DIR}:/reports" \
@@ -259,13 +261,27 @@ jobs:
             convert \
             --scanners vuln \
             --format table \
-            --output /reports/trivy-results.txt \
+            --output /reports/trivy-all-results.txt \
             /reports/trivy-results.json
 
-          test -s "${REPORT_DIR}/trivy-results.txt"
+          echo "Generating HIGH and CRITICAL TXT report..."
 
-          echo ""
-          echo "Generated files:"
+          docker run --rm \
+            -v "${REPORT_DIR}:/reports" \
+            -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            convert \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format table \
+            --output /reports/trivy-high-critical.txt \
+            /reports/trivy-results.json
+
+          test -s "${REPORT_DIR}/trivy-all-results.txt"
+          test -s "${REPORT_DIR}/trivy-high-critical.txt"
+
+          echo "Reports generated successfully."
+
           ls -lh "${REPORT_DIR}"
 
       - name: Upload Trivy scan reports
