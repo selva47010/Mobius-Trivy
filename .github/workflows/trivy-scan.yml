@@ -18,10 +18,10 @@ env:
   AWS_REGION: "ap-south-1"
   AWS_ACCOUNT_ID: "222634402470"
   ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
-  ECR_REPOSITORY: "te_dev_frontend"
+  ECR_REPOSITORY: "oorja_oem"
 
   # Change this if the image uses another tag
-  IMAGE_TAG: "c3a4bbd"
+  IMAGE_TAG: "latest"
 
   # Trivy scanner container
   TRIVY_IMAGE: "aquasec/trivy:0.70.0"
