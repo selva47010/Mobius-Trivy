@@ -21,7 +21,7 @@ env:
   ECR_REPOSITORY: "te_dev_frontend"
 
   # Change this if the image uses another tag
-  IMAGE_TAG: "75150b2"
+  IMAGE_TAG: "c3a4bbd"
 
   # Trivy scanner container
   TRIVY_IMAGE: "aquasec/trivy:0.70.0"
