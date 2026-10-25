@@ -1,21 +1,9 @@
-name: Trivy Docker Image Scan
+name: Trivy Frontend Image Scan
 
 on:
   workflow_dispatch:
-    inputs:
-      ui_image:
-        description: "UI Docker image and tag"
-        required: true
-        default: "node:22-bookworm-slim"
-        type: string
 
-      api_image:
-        description: "API Docker image and tag"
-        required: true
-        default: "python:3.12-slim"
-        type: string
-
-  # Optional: Enable automatic scans for selected branches.
+  # Optional: Run automatically when code is pushed.
   # push:
   #   branches:
   #     - main
@@ -23,328 +11,223 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
+  # AWS and ECR configuration
+  AWS_REGION: "ap-south-1"
+  AWS_ACCOUNT_ID: "222634402470"
+  ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
+  ECR_REPOSITORY: "te_dev_frontend"
+
+  # Change this if the image uses another tag
+  IMAGE_TAG: "75150b2"
+
+  # Trivy scanner container
   TRIVY_IMAGE: "aquasec/trivy:0.70.0"
 
 jobs:
   trivy-image-scan:
-    name: Scan UI and API Images
+    name: Scan te_dev_frontend ECR Image
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------
+      # Step 1: Checkout repository
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------
+      # Step 2: Authenticate to AWS using GitHub OIDC
+      # ---------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ---------------------------------------------------------
+      # Step 3: Login Docker to the private Amazon ECR registry
+      # ---------------------------------------------------------
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---------------------------------------------------------
+      # Step 4: Prepare directories and pull Trivy
+      # ---------------------------------------------------------
       - name: Prepare scan environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "========== PREPARING ENVIRONMENT =========="
+          echo "========== PREPARING SCAN ENVIRONMENT =========="
 
-          mkdir -p reports/ui
-          mkdir -p reports/api
+          mkdir -p reports/frontend
           mkdir -p .trivy-cache
 
+          echo "Docker version:"
           docker --version
+
+          echo "Python version:"
           python3 --version
 
-          echo "Pulling Trivy scanner image..."
+          echo "Pulling Trivy scanner image: ${TRIVY_IMAGE}"
           docker pull "${TRIVY_IMAGE}"
 
-      - name: Configure image names
-        id: images
+      # ---------------------------------------------------------
+      # Step 5: Construct the complete ECR image URI
+      # ---------------------------------------------------------
+      - name: Configure frontend image URI
+        id: image
         shell: bash
-        env:
-          UI_IMAGE_INPUT: ${{ inputs.ui_image }}
-          API_IMAGE_INPUT: ${{ inputs.api_image }}
         run: |
           set -euo pipefail
 
-          # Use manually supplied values when workflow_dispatch is used.
-          # Fall back to the defaults for other triggers such as push.
-          UI_IMAGE="${UI_IMAGE_INPUT:-selvavignesh02/zomato:v2}"
-          API_IMAGE="${API_IMAGE_INPUT:-selvavignesh02/petmanagement_backend:latest}"
+          FRONTEND_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          if [ -z "${UI_IMAGE}" ]; then
-            echo "ERROR: UI image value is empty."
+          if [ -z "${FRONTEND_IMAGE}" ]; then
+            echo "::error::Frontend image URI is empty."
             exit 1
           fi
 
-          if [ -z "${API_IMAGE}" ]; then
-            echo "ERROR: API image value is empty."
-            exit 1
-          fi
+          echo "frontend_image=${FRONTEND_IMAGE}" >> "${GITHUB_OUTPUT}"
 
-          echo "ui_image=${UI_IMAGE}" >> "${GITHUB_OUTPUT}"
-          echo "api_image=${API_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "========== IMAGE CONFIGURATION =========="
+          echo "AWS region     : ${AWS_REGION}"
+          echo "AWS account    : ${AWS_ACCOUNT_ID}"
+          echo "ECR registry   : ${ECR_REGISTRY}"
+          echo "ECR repository : ${ECR_REPOSITORY}"
+          echo "Image tag      : ${IMAGE_TAG}"
+          echo "Complete image : ${FRONTEND_IMAGE}"
+          echo "Trivy image    : ${TRIVY_IMAGE}"
 
-          echo "========== SCAN CONFIGURATION =========="
-          echo "UI image  : ${UI_IMAGE}"
-          echo "API image : ${API_IMAGE}"
-          echo "Trivy     : ${TRIVY_IMAGE}"
-
-      - name: Pull UI and API images
+      # ---------------------------------------------------------
+      # Step 6: Verify the image tag exists in ECR
+      # ---------------------------------------------------------
+      - name: Verify image exists in Amazon ECR
         shell: bash
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${{ steps.images.outputs.ui_image }}"
-          API_IMAGE="${{ steps.images.outputs.api_image }}"
+          echo "Checking whether image tag '${IMAGE_TAG}' exists..."
 
-          echo "========== PULLING UI IMAGE =========="
-          docker pull "${UI_IMAGE}"
+          aws ecr describe-images \
+            --region "${AWS_REGION}" \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${IMAGE_TAG}" \
+            --query 'imageDetails[0].{
+              Digest:imageDigest,
+              Tag:imageTags[0],
+              PushedAt:imagePushedAt,
+              Size:imageSizeInBytes
+            }' \
+            --output table
+
+      # ---------------------------------------------------------
+      # Step 7: Pull frontend image from Amazon ECR
+      # ---------------------------------------------------------
+      - name: Pull frontend image from Amazon ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
+
+          echo "========== PULLING FRONTEND IMAGE =========="
+          echo "Image: ${FRONTEND_IMAGE}"
+
+          docker pull "${FRONTEND_IMAGE}"
 
           echo ""
-          echo "========== PULLING API IMAGE =========="
-          docker pull "${API_IMAGE}"
-
-          echo ""
-          echo "========== VERIFYING IMAGES =========="
+          echo "========== VERIFYING PULLED IMAGE =========="
 
           docker image inspect \
-            "${UI_IMAGE}" \
-            --format='UI image ID: {{.Id}}'
+            "${FRONTEND_IMAGE}" \
+            --format='Image ID: {{.Id}}'
 
           docker image inspect \
-            "${API_IMAGE}" \
-            --format='API image ID: {{.Id}}'
+            "${FRONTEND_IMAGE}" \
+            --format='Created: {{.Created}}'
 
-      - name: Scan UI and API images
+          docker image inspect \
+            "${FRONTEND_IMAGE}" \
+            --format='Architecture: {{.Architecture}}'
+
+      # ---------------------------------------------------------
+      # Step 8: Scan image and produce JSON report
+      # ---------------------------------------------------------
+      - name: Generate Trivy JSON report
         shell: bash
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${{ steps.images.outputs.ui_image }}"
-          API_IMAGE="${{ steps.images.outputs.api_image }}"
+          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
+          REPORT_DIR="reports/frontend"
 
-          scan_image() {
-            NAME="$1"
-            IMAGE="$2"
-            DIR="reports/${NAME}"
+          rm -f \
+            "${REPORT_DIR}/trivy-results.json" \
+            "${REPORT_DIR}/trivy-results.txt"
 
-            mkdir -p "${DIR}"
+          echo "=========================================="
+          echo "SCANNING FRONTEND IMAGE"
+          echo "${FRONTEND_IMAGE}"
+          echo "=========================================="
 
-            rm -f \
-              "${DIR}/trivy-results.json" \
-              "${DIR}/trivy-results.txt"
+          docker image inspect "${FRONTEND_IMAGE}" > /dev/null
 
-            echo ""
-            echo "=========================================="
-            echo "SCANNING ${NAME}: ${IMAGE}"
-            echo "=========================================="
+          echo "Generating JSON vulnerability report..."
 
-            echo "Confirming the image exists locally..."
-            docker image inspect "${IMAGE}" > /dev/null
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$(pwd)/${REPORT_DIR}:/reports" \
+            -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            image \
+            --image-src docker \
+            --scanners vuln \
+            --vuln-type os,library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 0 \
+            --format json \
+            --output /reports/trivy-results.json \
+            "${FRONTEND_IMAGE}"
 
-            echo "Generating JSON vulnerability report..."
+          echo "Validating JSON report..."
 
-            docker run --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "$(pwd)/${DIR}:/reports" \
-              -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
-              "${TRIVY_IMAGE}" \
-              image \
-              --image-src docker \
-              --scanners vuln \
-              --exit-code 0 \
-              --format json \
-              --output /reports/trivy-results.json \
-              "${IMAGE}"
+          test -s "${REPORT_DIR}/trivy-results.json"
 
-            echo "Validating JSON report..."
+          python3 -m json.tool \
+            "${REPORT_DIR}/trivy-results.json" > /dev/null
 
-            test -s "${DIR}/trivy-results.json"
+          echo "JSON report generated successfully."
 
-            python3 -m json.tool \
-              "${DIR}/trivy-results.json" > /dev/null
-
-            echo "Generating TXT vulnerability table..."
-
-            docker run --rm \
-              -v "$(pwd)/${DIR}:/reports" \
-              -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
-              "${TRIVY_IMAGE}" \
-              convert \
-              --format table \
-              --output /reports/trivy-results.txt \
-              /reports/trivy-results.json
-
-            test -s "${DIR}/trivy-results.txt"
-
-            echo ""
-            echo "========== ${NAME} SCAN RESULTS =========="
-
-            echo "Image       : ${IMAGE}"
-            echo "JSON report : ${DIR}/trivy-results.json"
-            echo "TXT report  : ${DIR}/trivy-results.txt"
-
-            echo ""
-            cat "${DIR}/trivy-results.txt"
-          }
-
-          echo "========== SCANNING UI IMAGE =========="
-          scan_image "ui" "${UI_IMAGE}"
-
-          echo ""
-          echo "========== SCANNING API IMAGE =========="
-          scan_image "api" "${API_IMAGE}"
-
-      - name: Generate vulnerability summary
+      # ---------------------------------------------------------
+      # Step 9: Convert JSON report to human-readable TXT
+      # ---------------------------------------------------------
+      - name: Generate Trivy TXT report
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "========== SCAN SUMMARY =========="
+          REPORT_DIR="reports/frontend"
 
-          python3 <<'PY'
-          import json
-          from collections import Counter
+          echo "Generating human-readable TXT report..."
 
-          severities = (
-              "CRITICAL",
-              "HIGH",
-              "MEDIUM",
-              "LOW",
-              "UNKNOWN",
-          )
+          docker run --rm \
+            -v "$(pwd)/${REPORT_DIR}:/reports" \
+            -v "$(pwd)/.trivy-cache:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            convert \
+            --format table \
+            --output /reports/trivy-results.txt \
+            /reports/trivy-results.json
 
-          print(
-              f"{'IMAGE':<10} "
-              f"{'CRITICAL':>10} "
-              f"{'HIGH':>10} "
-              f"{'MEDIUM':>10} "
-              f"{'LOW':>10} "
-              f"{'UNKNOWN':>10} "
-              f"{'TOTAL':>10}"
-          )
+          test -s "${REPORT_DIR}/trivy-results.txt"
 
-          print("-" * 82)
-
-          overall = Counter()
-          component_summary = {}
-
-          for name in ("ui", "api"):
-              path = f"reports/{name}/trivy-results.json"
-
-              with open(path, encoding="utf-8") as report_file:
-                  report = json.load(report_file)
-
-              counts = Counter()
-
-              for result in report.get("Results") or []:
-                  for vulnerability in (
-                      result.get("Vulnerabilities") or []
-                  ):
-                      severity = vulnerability.get(
-                          "Severity",
-                          "UNKNOWN",
-                      ).upper()
-
-                      counts[severity] += 1
-
-              for severity in severities:
-                  overall[severity] += counts[severity]
-
-              component_summary[name] = {
-                  severity: counts[severity]
-                  for severity in severities
-              }
-
-              component_summary[name]["TOTAL"] = sum(
-                  counts.values()
-              )
-
-              print(
-                  f"{name.upper():<10} "
-                  f"{counts['CRITICAL']:>10} "
-                  f"{counts['HIGH']:>10} "
-                  f"{counts['MEDIUM']:>10} "
-                  f"{counts['LOW']:>10} "
-                  f"{counts['UNKNOWN']:>10} "
-                  f"{sum(counts.values()):>10}"
-              )
-
-          print("-" * 82)
-
-          print(
-              f"{'TOTAL':<10} "
-              f"{overall['CRITICAL']:>10} "
-              f"{overall['HIGH']:>10} "
-              f"{overall['MEDIUM']:>10} "
-              f"{overall['LOW']:>10} "
-              f"{overall['UNKNOWN']:>10} "
-              f"{sum(overall.values()):>10}"
-          )
-
-          summary = {
-              "images": component_summary,
-              "overall": {
-                  severity: overall[severity]
-                  for severity in severities
-              },
-              "total": sum(overall.values()),
-          }
-
-          with open(
-              "reports/scan-summary.json",
-              "w",
-              encoding="utf-8",
-          ) as summary_file:
-              json.dump(summary, summary_file, indent=2)
-          PY
-
-      - name: Display generated reports
-        if: always()
-        shell: bash
-        run: |
-          echo ""
-          echo "========== GENERATED REPORT FILES =========="
-
-          if [ -d reports ]; then
-            find reports -type f -exec ls -lh {} \;
-          else
-            echo "Reports directory was not created."
-          fi
+          echo "TXT report generated successfully."
 
           echo ""
-          echo "========== UI TXT REPORT =========="
-
-          if [ -f reports/ui/trivy-results.txt ]; then
-            cat reports/ui/trivy-results.txt
-          else
-            echo "UI TXT report was not generated."
-          fi
-
-          echo ""
-          echo "========== API TXT REPORT =========="
-
-          if [ -f reports/api/trivy-results.txt ]; then
-            cat reports/api/trivy-results.txt
-          else
-            echo "API TXT report was not generated."
-          fi
-
-          echo ""
-          echo "========== SUMMARY JSON =========="
-
-          if [ -f reports/scan-summary.json ]; then
-            cat reports/scan-summary.json
-          else
-            echo "Summary JSON was not generated."
-          fi
-
-      - name: Upload Trivy scan reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-image-scan-reports
-          path: |
-            reports/ui/trivy-results.json
-            reports/ui/trivy-results.txt
-            reports/api/trivy-results.json
-            reports/api/trivy-results.txt
-            reports/scan-summary.json
-          if-no-files-found: warn
-          retention-days: 30
+          echo "JSON report: ${REPORT_DIR}/trivy-results.json"
+          echo "TXT report : ${REPORT_DIR}/trivy-results.txt"
