@@ -1,4 +1,4 @@
-name: Trivy Frontend Image Scan
+name: Trivy Image Scan
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ env:
   AWS_REGION: "ap-south-1"
   AWS_ACCOUNT_ID: "222634402470"
   ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
-  ECR_REPOSITORY: "te_dev_frontend"
+  ECR_REPOSITORY: "te_dev_UI"
 
   # Change this if the image uses another tag
   IMAGE_TAG: "75150b2"
@@ -28,7 +28,7 @@ env:
 
 jobs:
   trivy-image-scan:
-    name: Scan te_dev_frontend ECR Image
+    name: Scan te_dev_UI ECR Image
     runs-on: ubuntu-latest
 
     steps:
@@ -114,7 +114,7 @@ jobs:
 
           echo "========== PREPARING SCAN ENVIRONMENT =========="
 
-          mkdir -p reports/frontend
+          mkdir -p reports/UI
           mkdir -p .trivy-cache
 
           echo "Docker version:"
@@ -129,20 +129,20 @@ jobs:
       # ---------------------------------------------------------
       # Step 5: Construct the complete ECR image URI
       # ---------------------------------------------------------
-      - name: Configure frontend image URI
+      - name: Configure UI image URI
         id: image
         shell: bash
         run: |
           set -euo pipefail
 
-          FRONTEND_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          UI_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          if [ -z "${FRONTEND_IMAGE}" ]; then
+          if [ -z "${UI_IMAGE}" ]; then
             echo "::error::Frontend image URI is empty."
             exit 1
           fi
 
-          echo "frontend_image=${FRONTEND_IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "UI_image=${UI_IMAGE}" >> "${GITHUB_OUTPUT}"
 
           echo "========== IMAGE CONFIGURATION =========="
           echo "AWS region     : ${AWS_REGION}"
@@ -150,7 +150,7 @@ jobs:
           echo "ECR registry   : ${ECR_REGISTRY}"
           echo "ECR repository : ${ECR_REPOSITORY}"
           echo "Image tag      : ${IMAGE_TAG}"
-          echo "Complete image : ${FRONTEND_IMAGE}"
+          echo "Complete image : ${UI_IMAGE}"
           echo "Trivy image    : ${TRIVY_IMAGE}"
 
       # ---------------------------------------------------------
@@ -176,33 +176,33 @@ jobs:
             --output table
 
       # ---------------------------------------------------------
-      # Step 7: Pull frontend image from Amazon ECR
+      # Step 7: Pull UI image from Amazon ECR
       # ---------------------------------------------------------
-      - name: Pull frontend image from Amazon ECR
+      - name: Pull UI image from Amazon ECR
         shell: bash
         run: |
           set -euo pipefail
 
-          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
+          UI_IMAGE="${{ steps.image.outputs.UI_image }}"
 
-          echo "========== PULLING FRONTEND IMAGE =========="
-          echo "Image: ${FRONTEND_IMAGE}"
+          echo "========== PULLING UI IMAGE =========="
+          echo "Image: ${UI_IMAGE}"
 
-          docker pull "${FRONTEND_IMAGE}"
+          docker pull "${UI_IMAGE}"
 
           echo ""
           echo "========== VERIFYING PULLED IMAGE =========="
 
           docker image inspect \
-            "${FRONTEND_IMAGE}" \
+            "${UI_IMAGE}" \
             --format='Image ID: {{.Id}}'
 
           docker image inspect \
-            "${FRONTEND_IMAGE}" \
+            "${UI_IMAGE}" \
             --format='Created: {{.Created}}'
 
           docker image inspect \
-            "${FRONTEND_IMAGE}" \
+            "${UI_IMAGE}" \
             --format='Architecture: {{.Architecture}}'
 
       # ---------------------------------------------------------
@@ -213,8 +213,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          FRONTEND_IMAGE="${{ steps.image.outputs.frontend_image }}"
-          REPORT_DIR="${GITHUB_WORKSPACE}/reports/frontend"
+          UI_IMAGE="${{ steps.image.outputs.UI_image }}"
+          REPORT_DIR="${GITHUB_WORKSPACE}/reports/UI"
 
           mkdir -p "${REPORT_DIR}"
 
@@ -225,7 +225,7 @@ jobs:
 
           echo "=========================================="
           echo "SCANNING IMAGE"
-          echo "${FRONTEND_IMAGE}"
+          echo "${UI_IMAGE}"
           echo "=========================================="
 
           echo "Generating complete JSON report..."
@@ -243,7 +243,7 @@ jobs:
             --exit-code 0 \
             --format json \
             --output /reports/trivy-results.json \
-            "${FRONTEND_IMAGE}"
+            "${UI_IMAGE}"
 
           echo "Validating JSON report..."
 
@@ -288,7 +288,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: te-dev-frontend-trivy-reports-${{ github.run_number }}
+          name: te-dev-UI-trivy-reports-${{ github.run_number }}
           path: ${{ github.workspace }}/reports/
           if-no-files-found: error
           
