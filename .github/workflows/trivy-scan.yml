@@ -18,7 +18,7 @@ env:
   AWS_REGION: "ap-south-1"
   AWS_ACCOUNT_ID: "222634402470"
   ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
-  ECR_REPOSITORY: "te_dev_UI"
+  ECR_REPOSITORY: "te_dev_frontend"
 
   # Change this if the image uses another tag
   IMAGE_TAG: "75150b2"
@@ -28,7 +28,7 @@ env:
 
 jobs:
   trivy-image-scan:
-    name: Scan te_dev_UI ECR Image
+    name: Scan te_dev_frontend ECR Image
     runs-on: ubuntu-latest
 
     steps:
