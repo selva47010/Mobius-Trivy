@@ -24,7 +24,7 @@ env:
   IMAGE_TAG: "75150b2"
 
   # Trivy scanner container
-  TRIVY_IMAGE: "aquasec/trivy:0.70.0"
+  TRIVY_IMAGE: "aquasec/trivy:0.76.1"
 
 jobs:
   trivy-image-scan:
