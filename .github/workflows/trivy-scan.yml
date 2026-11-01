@@ -15,7 +15,8 @@ env:
   UI_ECR_REPOSITORY: "te_dev_frontend"
   API_ECR_REPOSITORY: "te_dev_api"
 
-  IMAGE_TAG: "75150b2"
+  UI_IMAGE_TAG: "75150b2"
+  API_IMAGE_TAG: "latest"
 
   TRIVY_IMAGE: "aquasec/trivy:0.76.1"
 
@@ -129,8 +130,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          UI_IMAGE="${ECR_REGISTRY}/${UI_ECR_REPOSITORY}:${IMAGE_TAG}"
-          API_IMAGE="${ECR_REGISTRY}/${API_ECR_REPOSITORY}:${IMAGE_TAG}"
+          UI_IMAGE="${ECR_REGISTRY}/${UI_ECR_REPOSITORY}:${UI_IMAGE_TAG}"
+          API_IMAGE="${ECR_REGISTRY}/${API_ECR_REPOSITORY}:${API_IMAGE_TAG}"
 
           echo "ui_image=${UI_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "api_image=${API_IMAGE}" >> "$GITHUB_OUTPUT"
@@ -147,7 +148,7 @@ jobs:
           aws ecr describe-images \
             --region "${AWS_REGION}" \
             --repository-name "${UI_ECR_REPOSITORY}" \
-            --image-ids imageTag="${IMAGE_TAG}" \
+            --image-ids imageTag="${UI_IMAGE_TAG}" \
             --output table
 
       ######################################################################
@@ -159,7 +160,7 @@ jobs:
           aws ecr describe-images \
             --region "${AWS_REGION}" \
             --repository-name "${API_ECR_REPOSITORY}" \
-            --image-ids imageTag="${IMAGE_TAG}" \
+            --image-ids imageTag="${API_IMAGE_TAG}" \
             --output table
 
       ######################################################################
