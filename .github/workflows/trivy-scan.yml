@@ -9,29 +9,23 @@ permissions:
 
 env:
   AWS_REGION: ap-south-1
-  AWS_ACCOUNT_ID: "222634402470"
-  ECR_REGISTRY: "222634402470.dkr.ecr.ap-south-1.amazonaws.com"
+  ECR_REGISTRY: 222634402470.dkr.ecr.ap-south-1.amazonaws.com
 
-  UI_ECR_REPOSITORY: "te_dev_frontend"
-  API_ECR_REPOSITORY: "te_dev_api"
+  UI_ECR_REPOSITORY: te_dev_frontend
+  API_ECR_REPOSITORY: te_dev_api
 
-  UI_IMAGE_TAG: "75150b2"
-  API_IMAGE_TAG: "latest"
+  UI_IMAGE_TAG: 75150b2
+  API_IMAGE_TAG: latest
 
-  TRIVY_IMAGE: "aquasec/trivy:0.76.1"
+  TRIVY_IMAGE: aquasec/trivy:0.76.1
 
 jobs:
   trivy-image-scan:
-    name: Scan UI and API Images
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      #####################################################################
-      # Configure AWS Credentials
-      #####################################################################
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -39,122 +33,54 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      #####################################################################
-      # Login to Amazon ECR
-      #####################################################################
-
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      #####################################################################
-      # Prepare Environment
-      #####################################################################
-
-      - name: Prepare Scan Environment
-        shell: bash
+      - name: Prepare Environment
         run: |
-          set -euo pipefail
-
           mkdir -p reports/UI
           mkdir -p reports/API
           mkdir -p templates
           mkdir -p .trivy-cache
 
-          docker --version
-          python3 --version
-
           docker pull "${TRIVY_IMAGE}"
 
-      #####################################################################
-      # Download Trivy HTML Template
-      #####################################################################
-
-      - name: Download Trivy HTML Template
+      - name: Download HTML Template
         run: |
-          curl -L \
+          curl -sSL \
             https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
             -o templates/html.tpl
 
-      #####################################################################
-      # Construct Image URIs
-      #####################################################################
-
       - name: Configure Image URIs
         id: image
-        shell: bash
         run: |
-          set -euo pipefail
-
           UI_IMAGE="${ECR_REGISTRY}/${UI_ECR_REPOSITORY}:${UI_IMAGE_TAG}"
           API_IMAGE="${ECR_REGISTRY}/${API_ECR_REPOSITORY}:${API_IMAGE_TAG}"
 
-          echo "ui_image=${UI_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "api_image=${API_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "ui_image=${UI_IMAGE}" >> $GITHUB_OUTPUT
+          echo "api_image=${API_IMAGE}" >> $GITHUB_OUTPUT
 
-          echo "UI Image  : ${UI_IMAGE}"
-          echo "API Image : ${API_IMAGE}"
-
-      #####################################################################
-      # Verify UI Image Exists
-      #####################################################################
-
-      - name: Verify UI Image Exists
-        shell: bash
+      - name: Verify UI Image
         run: |
           aws ecr describe-images \
-            --region "${AWS_REGION}" \
             --repository-name "${UI_ECR_REPOSITORY}" \
-            --image-ids imageTag="${UI_IMAGE_TAG}" \
-            --query 'imageDetails[0].{
-              Digest:imageDigest,
-              Tag:imageTags[0],
-              PushedAt:imagePushedAt,
-              Size:imageSizeInBytes
-            }' \
-            --output table
+            --image-ids imageTag="${UI_IMAGE_TAG}"
 
-      #####################################################################
-      # Verify API Image Exists
-      #####################################################################
-
-      - name: Verify API Image Exists
-        shell: bash
+      - name: Verify API Image
         run: |
           aws ecr describe-images \
-            --region "${AWS_REGION}" \
             --repository-name "${API_ECR_REPOSITORY}" \
-            --image-ids imageTag="${API_IMAGE_TAG}" \
-            --query 'imageDetails[0].{
-              Digest:imageDigest,
-              Tag:imageTags[0],
-              PushedAt:imagePushedAt,
-              Size:imageSizeInBytes
-            }' \
-            --output table
-
-      #####################################################################
-      # Pull UI Image
-      #####################################################################
+            --image-ids imageTag="${API_IMAGE_TAG}"
 
       - name: Pull UI Image
-        shell: bash
         run: |
           docker pull "${{ steps.image.outputs.ui_image }}"
 
-      #####################################################################
-      # Pull API Image
-      #####################################################################
-
       - name: Pull API Image
-        shell: bash
         run: |
           docker pull "${{ steps.image.outputs.api_image }}"
 
-      #####################################################################
-      # Generate Trivy Reports
-      #####################################################################
-
-      - name: Generate Trivy Reports
+      - name: Scan Images and Generate Reports
         shell: bash
         run: |
           set -euo pipefail
@@ -166,12 +92,10 @@ jobs:
 
             REPORT_DIR="${GITHUB_WORKSPACE}/reports/${NAME}"
 
-            mkdir -p "${REPORT_DIR}"
-
-            echo "================================================="
+            echo "===================================="
             echo "Scanning ${NAME}"
-            echo "Image : ${IMAGE}"
-            echo "================================================="
+            echo "Image: ${IMAGE}"
+            echo "===================================="
 
             ####################################################
             # JSON REPORT
@@ -184,21 +108,10 @@ jobs:
               "${TRIVY_IMAGE}" image \
               --image-src docker \
               --scanners vuln \
-              --pkg-types os,library \
               --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-              --exit-code 0 \
               --format json \
               --output /reports/trivy-results.json \
               "${IMAGE}"
-
-            ####################################################
-            # Validate JSON
-            ####################################################
-
-            test -s "${REPORT_DIR}/trivy-results.json"
-
-            python3 -m json.tool \
-              "${REPORT_DIR}/trivy-results.json" > /dev/null
 
             ####################################################
             # FULL TXT REPORT
@@ -212,7 +125,7 @@ jobs:
               /reports/trivy-results.json
 
             ####################################################
-            # HIGH + CRITICAL REPORT
+            # HIGH + CRITICAL TXT REPORT
             ####################################################
 
             docker run --rm \
@@ -236,28 +149,26 @@ jobs:
               --output /reports/trivy-report.html \
               /reports/trivy-results.json
 
-            echo ""
-            echo "Generated Reports:"
-            ls -lh "${REPORT_DIR}"
-            echo ""
+            ####################################################
+            # SECURITY GATE
+            ####################################################
+            echo "Running security gate..."
+
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
+              "${TRIVY_IMAGE}" image \
+              --image-src docker \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --no-progress \
+              "${IMAGE}"
+
+            echo "Security gate passed for ${NAME}"
           }
 
           scan_image "UI" "${{ steps.image.outputs.ui_image }}"
           scan_image "API" "${{ steps.image.outputs.api_image }}"
-
-      #####################################################################
-      # Scan Summary
-      #####################################################################
-
-      - name: Report Summary
-        if: always()
-        run: |
-          echo "Generated Files"
-          find reports -type f | sort
-
-      #####################################################################
-      # Upload Artifacts
-      #####################################################################
 
       - name: Upload Trivy Reports
         if: always()
