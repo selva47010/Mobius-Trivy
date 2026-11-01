@@ -185,4 +185,241 @@ artifacts:
     - "reports/api/trivy-results.txt"
   name: "trivy-image-scan-reports"
   discard-paths: no
- 
+ ==================================================================================
+ Actual flow 
+ name: Minespider Scan and Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+
+  API_IMAGE: registry.minespider.com/minespider/api:latest
+  WEBAPP_IMAGE: registry.minespider.com/minespider/webapp:latest
+
+  TRIVY_IMAGE: aquasec/trivy:0.76.1
+
+  CRITICAL_THRESHOLD: "5"
+  HIGH_THRESHOLD: "5"
+  LOW_THRESHOLD: "30"
+
+jobs:
+
+  trivy-scan:
+    name: Trivy Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Harbor
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" | \
+          docker login registry.minespider.com \
+            -u "${{ secrets.HARBOR_USERNAME }}" \
+            --password-stdin
+
+      - name: Prepare Environment
+        run: |
+          mkdir -p reports/API
+          mkdir -p reports/WEBAPP
+          mkdir -p templates
+          mkdir -p .trivy-cache
+
+          docker pull "${TRIVY_IMAGE}"
+
+          docker --version
+          jq --version
+          python3 --version
+
+      - name: Download Trivy HTML Template
+        run: |
+          curl -sSL \
+            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
+            -o templates/html.tpl
+
+      - name: Pull MineSpider Images
+        run: |
+          docker pull "${API_IMAGE}"
+          docker pull "${WEBAPP_IMAGE}"
+
+      - name: Run Trivy Scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECURITY_GATE_FAILED=0
+
+          scan_image() {
+
+            NAME="$1"
+            IMAGE="$2"
+
+            REPORT_DIR="${GITHUB_WORKSPACE}/reports/${NAME}"
+
+            echo "=========================================="
+            echo "Scanning ${NAME}"
+            echo "${IMAGE}"
+            echo "=========================================="
+
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "${REPORT_DIR}:/reports" \
+              -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
+              "${TRIVY_IMAGE}" image \
+              --image-src docker \
+              --scanners vuln \
+              --pkg-types os,library \
+              --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+              --format json \
+              --output /reports/trivy-results.json \
+              "${IMAGE}"
+
+            python3 -m json.tool \
+              "${REPORT_DIR}/trivy-results.json" > /dev/null
+
+            docker run --rm \
+              -v "${REPORT_DIR}:/reports" \
+              "${TRIVY_IMAGE}" convert \
+              --format table \
+              --output /reports/trivy-all-results.txt \
+              /reports/trivy-results.json
+
+            docker run --rm \
+              -v "${REPORT_DIR}:/reports" \
+              "${TRIVY_IMAGE}" convert \
+              --severity HIGH,CRITICAL \
+              --format table \
+              --output /reports/trivy-high-critical.txt \
+              /reports/trivy-results.json
+
+            docker run --rm \
+              -v "${REPORT_DIR}:/reports" \
+              -v "${GITHUB_WORKSPACE}/templates:/templates" \
+              "${TRIVY_IMAGE}" convert \
+              --format template \
+              --template "@/templates/html.tpl" \
+              --output /reports/trivy-report.html \
+              /reports/trivy-results.json
+
+            CRITICAL_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="CRITICAL")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
+
+            HIGH_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="HIGH")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
+
+            LOW_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="LOW")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
+
+            echo "------------------------------------------"
+            echo "${NAME} Vulnerability Summary"
+            echo "------------------------------------------"
+            echo "Critical : ${CRITICAL_COUNT}"
+            echo "High     : ${HIGH_COUNT}"
+            echo "Low      : ${LOW_COUNT}"
+
+            ####################################################
+            # TRIVY BUILT-IN SECURITY GATE
+            #
+            # Disabled intentionally because this
+            # workflow uses threshold-based validation.
+            #
+            # docker run --rm \
+            #   -v /var/run/docker.sock:/var/run/docker.sock \
+            #   -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
+            #   "${TRIVY_IMAGE}" image \
+            #   --severity HIGH,CRITICAL \
+            #   --exit-code 1 \
+            #   --no-progress \
+            #   "${IMAGE}"
+            #
+            ####################################################
+
+            if [ "${CRITICAL_COUNT}" -gt "${CRITICAL_THRESHOLD}" ]; then
+              echo "::error::${NAME} Critical threshold exceeded"
+              SECURITY_GATE_FAILED=1
+            fi
+
+            if [ "${HIGH_COUNT}" -gt "${HIGH_THRESHOLD}" ]; then
+              echo "::error::${NAME} High threshold exceeded"
+              SECURITY_GATE_FAILED=1
+            fi
+
+            if [ "${LOW_COUNT}" -gt "${LOW_THRESHOLD}" ]; then
+              echo "::error::${NAME} Low threshold exceeded"
+              SECURITY_GATE_FAILED=1
+            fi
+          }
+
+          scan_image "API" "${API_IMAGE}"
+          scan_image "WEBAPP" "${WEBAPP_IMAGE}"
+
+          if [ "${SECURITY_GATE_FAILED}" -eq 1 ]; then
+            echo "Security threshold validation failed."
+            exit 1
+          fi
+
+          echo "Security threshold validation passed."
+
+      - name: Upload Trivy Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minespider-trivy-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+
+  deploy-dev:
+    name: Deploy to Dev
+    needs: trivy-scan
+    if: success()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Deploy via SSM
+        run: |
+          aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --document-name "AWS-RunShellScript" \
+            --targets "Key=instanceids,Values=${{ secrets.DEV_INSTANCE_ID }}" \
+            --comment "MineSpider Deployment After Trivy Scan" \
+            --parameters 'commands=[
+              "cd /root/minespider",
+              "docker login registry.minespider.com -u '"'"${{ secrets.HARBOR_USERNAME }}"'"' -p '"'"${{ secrets.HARBOR_PASSWORD }}"'"'",
+              "docker compose pull",
+              "docker compose up -d",
+              "docker ps"
+            ]'
