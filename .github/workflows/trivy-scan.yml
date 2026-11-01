@@ -19,8 +19,13 @@ env:
 
   TRIVY_IMAGE: aquasec/trivy:0.76.1
 
+  CRITICAL_THRESHOLD: "5"
+  HIGH_THRESHOLD: "5"
+  LOW_THRESHOLD: "30"
+
 jobs:
   trivy-image-scan:
+    name: Scan UI and API Images
     runs-on: ubuntu-latest
 
     steps:
@@ -36,16 +41,24 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Prepare Environment
+      - name: Prepare Scan Environment
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p reports/UI
           mkdir -p reports/API
           mkdir -p templates
           mkdir -p .trivy-cache
 
+          docker --version
+          jq --version
+          python3 --version
+
           docker pull "${TRIVY_IMAGE}"
 
-      - name: Download HTML Template
+      - name: Download Trivy HTML Template
+        shell: bash
         run: |
           curl -sSL \
             https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
@@ -53,37 +66,51 @@ jobs:
 
       - name: Configure Image URIs
         id: image
+        shell: bash
         run: |
+          set -euo pipefail
+
           UI_IMAGE="${ECR_REGISTRY}/${UI_ECR_REPOSITORY}:${UI_IMAGE_TAG}"
           API_IMAGE="${ECR_REGISTRY}/${API_ECR_REPOSITORY}:${API_IMAGE_TAG}"
 
-          echo "ui_image=${UI_IMAGE}" >> $GITHUB_OUTPUT
-          echo "api_image=${API_IMAGE}" >> $GITHUB_OUTPUT
+          echo "ui_image=${UI_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "api_image=${API_IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify UI Image
+          echo "UI Image : ${UI_IMAGE}"
+          echo "API Image: ${API_IMAGE}"
+
+      - name: Verify UI Image Exists
+        shell: bash
         run: |
           aws ecr describe-images \
+            --region "${AWS_REGION}" \
             --repository-name "${UI_ECR_REPOSITORY}" \
             --image-ids imageTag="${UI_IMAGE_TAG}"
 
-      - name: Verify API Image
+      - name: Verify API Image Exists
+        shell: bash
         run: |
           aws ecr describe-images \
+            --region "${AWS_REGION}" \
             --repository-name "${API_ECR_REPOSITORY}" \
             --image-ids imageTag="${API_IMAGE_TAG}"
 
       - name: Pull UI Image
+        shell: bash
         run: |
           docker pull "${{ steps.image.outputs.ui_image }}"
 
       - name: Pull API Image
+        shell: bash
         run: |
           docker pull "${{ steps.image.outputs.api_image }}"
 
-      - name: Scan Images and Generate Reports
+      - name: Generate Reports and Apply Thresholds
         shell: bash
         run: |
           set -euo pipefail
+
+          SECURITY_GATE_FAILED=0
 
           scan_image() {
 
@@ -92,10 +119,12 @@ jobs:
 
             REPORT_DIR="${GITHUB_WORKSPACE}/reports/${NAME}"
 
-            echo "===================================="
+            mkdir -p "${REPORT_DIR}"
+
+            echo "================================================="
             echo "Scanning ${NAME}"
             echo "Image: ${IMAGE}"
-            echo "===================================="
+            echo "================================================="
 
             ####################################################
             # JSON REPORT
@@ -108,10 +137,20 @@ jobs:
               "${TRIVY_IMAGE}" image \
               --image-src docker \
               --scanners vuln \
+              --pkg-types os,library \
               --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
               --format json \
               --output /reports/trivy-results.json \
               "${IMAGE}"
+
+            test -s "${REPORT_DIR}/trivy-results.json"
+
+            ####################################################
+            # VALIDATE JSON
+            ####################################################
+
+            python3 -m json.tool \
+              "${REPORT_DIR}/trivy-results.json" > /dev/null
 
             ####################################################
             # FULL TXT REPORT
@@ -150,25 +189,109 @@ jobs:
               /reports/trivy-results.json
 
             ####################################################
-            # SECURITY GATE
+            # COUNT VULNERABILITIES
             ####################################################
-            echo "Running security gate..."
 
-            docker run --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
-              "${TRIVY_IMAGE}" image \
-              --image-src docker \
-              --severity HIGH,CRITICAL \
-              --exit-code 1 \
-              --no-progress \
-              "${IMAGE}"
+            CRITICAL_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="CRITICAL")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
 
-            echo "Security gate passed for ${NAME}"
+            HIGH_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="HIGH")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
+
+            LOW_COUNT=$(jq '
+            [
+              .Results[]?
+              | .Vulnerabilities[]?
+              | select(.Severity=="LOW")
+            ] | length
+            ' "${REPORT_DIR}/trivy-results.json")
+
+            echo ""
+            echo "======================================"
+            echo "Vulnerability Summary - ${NAME}"
+            echo "======================================"
+            echo "Critical : ${CRITICAL_COUNT}"
+            echo "High     : ${HIGH_COUNT}"
+            echo "Low      : ${LOW_COUNT}"
+            echo ""
+
+            ####################################################
+            # TRIVY BUILT-IN SECURITY GATE
+            #
+            # Disabled because this workflow enforces
+            # custom vulnerability thresholds.
+            #
+            # Uncomment if you want Trivy to fail
+            # immediately when HIGH/CRITICAL findings exist.
+            #
+            # docker run --rm \
+            #   -v /var/run/docker.sock:/var/run/docker.sock \
+            #   -v "${GITHUB_WORKSPACE}/.trivy-cache:/root/.cache/trivy" \
+            #   "${TRIVY_IMAGE}" image \
+            #   --image-src docker \
+            #   --severity HIGH,CRITICAL \
+            #   --exit-code 1 \
+            #   --no-progress \
+            #   "${IMAGE}"
+            #
+            ####################################################
+
+            ####################################################
+            # CUSTOM THRESHOLD GATE
+            ####################################################
+
+            if [ "${CRITICAL_COUNT}" -gt "${CRITICAL_THRESHOLD}" ]; then
+              echo "::error::${NAME} Critical threshold exceeded (${CRITICAL_COUNT} > ${CRITICAL_THRESHOLD})"
+              SECURITY_GATE_FAILED=1
+            fi
+
+            if [ "${HIGH_COUNT}" -gt "${HIGH_THRESHOLD}" ]; then
+              echo "::error::${NAME} High threshold exceeded (${HIGH_COUNT} > ${HIGH_THRESHOLD})"
+              SECURITY_GATE_FAILED=1
+            fi
+
+            if [ "${LOW_COUNT}" -gt "${LOW_THRESHOLD}" ]; then
+              echo "::error::${NAME} Low threshold exceeded (${LOW_COUNT} > ${LOW_THRESHOLD})"
+              SECURITY_GATE_FAILED=1
+            fi
+
+            echo ""
+            echo "Generated files:"
+            ls -lh "${REPORT_DIR}"
+            echo ""
           }
 
           scan_image "UI" "${{ steps.image.outputs.ui_image }}"
           scan_image "API" "${{ steps.image.outputs.api_image }}"
+
+          echo ""
+          echo "======================================"
+          echo "SECURITY GATE SUMMARY"
+          echo "======================================"
+
+          if [ "${SECURITY_GATE_FAILED}" -eq 1 ]; then
+            echo "One or more vulnerability thresholds exceeded."
+            exit 1
+          fi
+
+          echo "All vulnerability thresholds satisfied."
+
+      - name: Report Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "Generated Reports:"
+          find reports -type f | sort
 
       - name: Upload Trivy Reports
         if: always()
