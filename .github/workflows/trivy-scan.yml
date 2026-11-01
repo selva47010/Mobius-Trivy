@@ -16,7 +16,7 @@ env:
   API_ECR_REPOSITORY: "te_dev_api"
 
   UI_IMAGE_TAG: "75150b2"
-  API_IMAGE_TAG: "latest"
+  API_IMAGE_TAG: "a1b2c3d4"
 
   TRIVY_IMAGE: "aquasec/trivy:0.76.1"
 
@@ -29,70 +29,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      ######################################################################
-      # OIDC Debug (Optional)
-      ######################################################################
-      - name: Display GitHub OIDC Claims
-        shell: bash
-        run: |
-          set -euo pipefail
+      #####################################################################
+      # Configure AWS Credentials
+      #####################################################################
 
-          RESPONSE=$(curl --silent --show-error --fail \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
-
-          TOKEN=$(echo "${RESPONSE}" | jq -r '.value')
-
-          if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
-            echo "::error::GitHub did not return an OIDC token."
-            exit 1
-          fi
-
-          PAYLOAD=$(echo "${TOKEN}" | cut -d '.' -f 2)
-
-          python3 - "${PAYLOAD}" <<'PY'
-          import base64
-          import json
-          import sys
-
-          payload = sys.argv[1]
-          payload += "=" * (-len(payload) % 4)
-
-          claims = json.loads(
-              base64.urlsafe_b64decode(payload).decode("utf-8")
-          )
-
-          safe_claims = {
-              "iss": claims.get("iss"),
-              "aud": claims.get("aud"),
-              "sub": claims.get("sub"),
-              "repository": claims.get("repository"),
-              "repository_owner": claims.get("repository_owner"),
-              "ref": claims.get("ref"),
-              "event_name": claims.get("event_name"),
-          }
-
-          print(json.dumps(safe_claims, indent=2))
-          PY
-
-      ######################################################################
-      # Authenticate AWS
-      ######################################################################
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      ######################################################################
-      # Login ECR
-      ######################################################################
+      #####################################################################
+      # Login to Amazon ECR
+      #####################################################################
+
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      ######################################################################
+      #####################################################################
       # Prepare Environment
-      ######################################################################
+      #####################################################################
+
       - name: Prepare Scan Environment
         shell: bash
         run: |
@@ -106,24 +63,22 @@ jobs:
           docker --version
           python3 --version
 
-          echo "Pulling Trivy image..."
           docker pull "${TRIVY_IMAGE}"
 
-      ######################################################################
+      #####################################################################
       # Download Trivy HTML Template
-      ######################################################################
-      - name: Download HTML Template
-        shell: bash
+      #####################################################################
+
+      - name: Download Trivy HTML Template
         run: |
           curl -L \
             https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
             -o templates/html.tpl
 
-          ls -l templates/html.tpl
+      #####################################################################
+      # Construct Image URIs
+      #####################################################################
 
-      ######################################################################
-      # Build Image URIs
-      ######################################################################
       - name: Configure Image URIs
         id: image
         shell: bash
@@ -136,12 +91,13 @@ jobs:
           echo "ui_image=${UI_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "api_image=${API_IMAGE}" >> "$GITHUB_OUTPUT"
 
-          echo "UI  Image: ${UI_IMAGE}"
-          echo "API Image: ${API_IMAGE}"
+          echo "UI Image  : ${UI_IMAGE}"
+          echo "API Image : ${API_IMAGE}"
 
-      ######################################################################
-      # Verify UI Image
-      ######################################################################
+      #####################################################################
+      # Verify UI Image Exists
+      #####################################################################
+
       - name: Verify UI Image Exists
         shell: bash
         run: |
@@ -149,11 +105,18 @@ jobs:
             --region "${AWS_REGION}" \
             --repository-name "${UI_ECR_REPOSITORY}" \
             --image-ids imageTag="${UI_IMAGE_TAG}" \
+            --query 'imageDetails[0].{
+              Digest:imageDigest,
+              Tag:imageTags[0],
+              PushedAt:imagePushedAt,
+              Size:imageSizeInBytes
+            }' \
             --output table
 
-      ######################################################################
-      # Verify API Image
-      ######################################################################
+      #####################################################################
+      # Verify API Image Exists
+      #####################################################################
+
       - name: Verify API Image Exists
         shell: bash
         run: |
@@ -161,33 +124,42 @@ jobs:
             --region "${AWS_REGION}" \
             --repository-name "${API_ECR_REPOSITORY}" \
             --image-ids imageTag="${API_IMAGE_TAG}" \
+            --query 'imageDetails[0].{
+              Digest:imageDigest,
+              Tag:imageTags[0],
+              PushedAt:imagePushedAt,
+              Size:imageSizeInBytes
+            }' \
             --output table
 
-      ######################################################################
+      #####################################################################
       # Pull UI Image
-      ######################################################################
+      #####################################################################
+
       - name: Pull UI Image
         shell: bash
         run: |
           docker pull "${{ steps.image.outputs.ui_image }}"
 
-      ######################################################################
+      #####################################################################
       # Pull API Image
-      ######################################################################
+      #####################################################################
+
       - name: Pull API Image
         shell: bash
         run: |
           docker pull "${{ steps.image.outputs.api_image }}"
 
-      ######################################################################
-      # Scan Images
-      ######################################################################
+      #####################################################################
+      # Generate Trivy Reports
+      #####################################################################
+
       - name: Generate Trivy Reports
         shell: bash
         run: |
           set -euo pipefail
 
-          scan_image () {
+          scan_image() {
 
             NAME="$1"
             IMAGE="$2"
@@ -196,14 +168,14 @@ jobs:
 
             mkdir -p "${REPORT_DIR}"
 
-            echo "============================================================"
+            echo "================================================="
             echo "Scanning ${NAME}"
-            echo "Image: ${IMAGE}"
-            echo "============================================================"
+            echo "Image : ${IMAGE}"
+            echo "================================================="
 
-            ########################################################
+            ####################################################
             # JSON REPORT
-            ########################################################
+            ####################################################
 
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
@@ -219,18 +191,18 @@ jobs:
               --output /reports/trivy-results.json \
               "${IMAGE}"
 
-            test -s "${REPORT_DIR}/trivy-results.json"
+            ####################################################
+            # Validate JSON
+            ####################################################
 
-            ########################################################
-            # VALIDATE JSON
-            ########################################################
+            test -s "${REPORT_DIR}/trivy-results.json"
 
             python3 -m json.tool \
               "${REPORT_DIR}/trivy-results.json" > /dev/null
 
-            ########################################################
+            ####################################################
             # FULL TXT REPORT
-            ########################################################
+            ####################################################
 
             docker run --rm \
               -v "${REPORT_DIR}:/reports" \
@@ -239,9 +211,9 @@ jobs:
               --output /reports/trivy-all-results.txt \
               /reports/trivy-results.json
 
-            ########################################################
-            # HIGH & CRITICAL TXT REPORT
-            ########################################################
+            ####################################################
+            # HIGH + CRITICAL REPORT
+            ####################################################
 
             docker run --rm \
               -v "${REPORT_DIR}:/reports" \
@@ -251,9 +223,9 @@ jobs:
               --output /reports/trivy-high-critical.txt \
               /reports/trivy-results.json
 
-            ########################################################
+            ####################################################
             # HTML REPORT
-            ########################################################
+            ####################################################
 
             docker run --rm \
               -v "${REPORT_DIR}:/reports" \
@@ -265,34 +237,33 @@ jobs:
               /reports/trivy-results.json
 
             echo ""
-            echo "Generated files:"
+            echo "Generated Reports:"
             ls -lh "${REPORT_DIR}"
             echo ""
           }
 
-          scan_image "UI"  "${{ steps.image.outputs.ui_image }}"
+          scan_image "UI" "${{ steps.image.outputs.ui_image }}"
           scan_image "API" "${{ steps.image.outputs.api_image }}"
 
-      ######################################################################
-      # Summary
-      ######################################################################
-      - name: Scan Summary
-        if: always()
-        shell: bash
-        run: |
-          echo "Generated Reports"
-          echo "-----------------"
+      #####################################################################
+      # Scan Summary
+      #####################################################################
 
+      - name: Report Summary
+        if: always()
+        run: |
+          echo "Generated Files"
           find reports -type f | sort
 
-      ######################################################################
+      #####################################################################
       # Upload Artifacts
-      ######################################################################
-      - name: Upload Trivy Scan Reports
+      #####################################################################
+
+      - name: Upload Trivy Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: te-dev-trivy-reports-${{ github.run_number }}
+          name: trivy-reports-${{ github.run_number }}
           path: reports/
-          if-no-files-found: error
           retention-days: 30
+          if-no-files-found: error
