@@ -35,6 +35,23 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify Harbor Secrets
+        run: |
+          echo "Username length: ${#HARBOR_USERNAME}"
+      
+          if [ -z "$HARBOR_USERNAME" ]; then
+            echo "Username secret is empty"
+            exit 1
+          fi
+      
+          if [ -z "$HARBOR_PASSWORD" ]; then
+            echo "Password secret is empty"
+            exit 1
+          fi
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          
       - name: Login to Harbor
         run: |
           echo "${{ secrets.HARBOR_PASSWORD }}" | \
