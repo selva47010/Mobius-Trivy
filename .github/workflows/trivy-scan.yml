@@ -16,7 +16,7 @@ env:
   API_ECR_REPOSITORY: "te_dev_api"
 
   UI_IMAGE_TAG: "75150b2"
-  API_IMAGE_TAG: "a1b2c3d4"
+  API_IMAGE_TAG: "latest"
 
   TRIVY_IMAGE: "aquasec/trivy:0.76.1"
 
