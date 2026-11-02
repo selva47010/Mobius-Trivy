@@ -63,12 +63,15 @@ jobs:
           echo "Username Value:"
           printf '%s\n' "$HARBOR_USERNAME"
           
-#      - name: Login to Harbor
-#        run: |
-#          echo "${{ secrets.HARBOR_PASSWORD }}" | \
-#          docker login registry.minespider.com \
-#            -u "${{ secrets.HARBOR_USERNAME }}" \
-#            --password-stdin
+      - name: Login to Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          echo "${HARBOR_PASSWORD}" | \
+          docker login registry.minespider.com \
+            --username "${HARBOR_USERNAME}" \
+            --password-stdin
 
       - name: Prepare Environment
         run: |
