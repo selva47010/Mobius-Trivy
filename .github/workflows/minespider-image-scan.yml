@@ -51,13 +51,24 @@ jobs:
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-          
-      - name: Login to Harbor
+
+      - name: Debug Harbor Credentials
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          echo "${{ secrets.HARBOR_PASSWORD }}" | \
-          docker login registry.minespider.com \
-            -u "${{ secrets.HARBOR_USERNAME }}" \
-            --password-stdin
+          echo "Username Length: ${#HARBOR_USERNAME}"
+          echo "Password Length: ${#HARBOR_PASSWORD}"
+      
+          echo "Username Value:"
+          printf '%s\n' "$HARBOR_USERNAME"
+          
+#      - name: Login to Harbor
+#        run: |
+#          echo "${{ secrets.HARBOR_PASSWORD }}" | \
+#          docker login registry.minespider.com \
+#            -u "${{ secrets.HARBOR_USERNAME }}" \
+#            --password-stdin
 
       - name: Prepare Environment
         run: |
@@ -224,30 +235,30 @@ jobs:
           path: reports/
           retention-days: 30
 
-  deploy-dev:
-    name: Deploy to Dev
-    needs: trivy-scan
-    if: success()
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ap-south-1
-
-      - name: Deploy via SSM
-        run: |
-          aws ssm send-command \
-            --region "${AWS_REGION}" \
-            --document-name "AWS-RunShellScript" \
-            --targets "Key=instanceids,Values=${{ secrets.DEV_INSTANCE_ID }}" \
-            --comment "MineSpider Deployment After Trivy Scan" \
-            --parameters 'commands=[
-              "cd /root/minespider",
-              "docker login registry.minespider.com -u '"'"${{ secrets.HARBOR_USERNAME }}"'"' -p '"'"${{ secrets.HARBOR_PASSWORD }}"'"'",
-              "docker compose pull",
-              "docker compose up -d",
-              "docker ps"
-            ]'
+#  deploy-dev:
+#    name: Deploy to Dev
+#    needs: trivy-scan
+#    if: success()
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#      - name: Configure AWS Credentials
+#        uses: aws-actions/configure-aws-credentials@v6
+#        with:
+#          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+#          aws-region: ap-south-1
+#
+#      - name: Deploy via SSM
+#        run: |
+#          aws ssm send-command \
+#            --region "${AWS_REGION}" \
+#            --document-name "AWS-RunShellScript" \
+#            --targets "Key=instanceids,Values=${{ secrets.DEV_INSTANCE_ID }}" \
+#            --comment "MineSpider Deployment After Trivy Scan" \
+#            --parameters 'commands=[
+#              "cd /root/minespider",
+#              "docker login registry.minespider.com -u '"'"${{ secrets.HARBOR_USERNAME }}"'"' -p '"'"${{ secrets.HARBOR_PASSWORD }}"'"'",
+#              "docker compose pull",
+#              "docker compose up -d",
+#              "docker ps"
+#            ]'
