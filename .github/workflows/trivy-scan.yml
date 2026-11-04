@@ -11,11 +11,11 @@ env:
   AWS_REGION: ap-south-1
   ECR_REGISTRY: 222634402470.dkr.ecr.ap-south-1.amazonaws.com
 
-  UI_ECR_REPOSITORY: te_dev_frontend
-  API_ECR_REPOSITORY: te_dev_api
+  UI_ECR_REPOSITORY: minespider/ui
+  API_ECR_REPOSITORY: minespider/api
 
-  UI_IMAGE_TAG: 75150b2
-  API_IMAGE_TAG: latest
+  UI_IMAGE_TAG: v3.43.0
+  API_IMAGE_TAG: v3.43.0
 
   TRIVY_IMAGE: aquasec/trivy:0.76.1
 
